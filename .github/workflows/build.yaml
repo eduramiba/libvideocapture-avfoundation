@@ -4,16 +4,12 @@ on: [push]
 
 jobs:
   build:
-    name: Swift ${{ matrix.swift }} on ${{ matrix.os }}
+    name: Build on ${{ matrix.os }}
     strategy:
       matrix:
-        os: [macos-latest]
-        swift: ["5.3", "5.4", "5.5", "5.6"]
+        os: [macos-11, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: fwal/setup-swift@194625b58a582570f61cc707c3b558086c26b723
-        with:
-          swift-version: ${{ matrix.swift }}
       - uses: actions/checkout@v3
       - name: Build
         run: make
