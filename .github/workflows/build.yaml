@@ -8,10 +8,10 @@ jobs:
     strategy:
       matrix:
         os: [macos-latest]
-        swift: ["5.3", "5.4", "5.5", "5.6", "5.7"]
+        swift: ["5.3", "5.4", "5.5", "5.6"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: fwal/setup-swift@2040b795e5c453c3a05fcb8316496afc8a74f192
+      - uses: fwal/setup-swift@194625b58a582570f61cc707c3b558086c26b723
         with:
           swift-version: ${{ matrix.swift }}
       - uses: actions/checkout@v3
