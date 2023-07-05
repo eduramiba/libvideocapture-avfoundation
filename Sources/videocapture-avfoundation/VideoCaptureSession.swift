@@ -13,6 +13,7 @@ public class VideoCaptureSession : NSObject {
     public var hasFrame: Bool = false
     public var width: UInt32 = 0;
     public var height: UInt32 = 0;
+    public var bytesPerRow: UInt32 = 0;
 
     public override init() {
         super.init();
@@ -154,6 +155,7 @@ extension VideoCaptureSession: AVCaptureVideoDataOutputSampleBufferDelegate {
 
         self.width = UInt32(CVPixelBufferGetWidth(imageBuffer))
         self.height = UInt32(CVPixelBufferGetHeight(imageBuffer))
+        self.bytesPerRow = UInt32(CVPixelBufferGetBytesPerRow(imageBuffer))
 
         CVPixelBufferLockBaseAddress(imageBuffer, CVPixelBufferLockFlags(rawValue: 0));
         let size = CVPixelBufferGetDataSize(imageBuffer);

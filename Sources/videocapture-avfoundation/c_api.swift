@@ -166,6 +166,19 @@ public func frame_height(deviceIndex: UInt32) -> UInt32 {
     return session.height;
 }
 
+@_cdecl("vcavf_frame_bytes_per_row")
+public func frame_bytes_per_row(deviceIndex: UInt32) -> UInt32 {
+    guard let dev: VideoDevice = devices[safe: Int(deviceIndex)] else {
+        return 0;
+    }
+
+    guard let session = sessions[dev.uniqueId] else {
+        return 0;
+    }
+
+    return session.bytesPerRow;
+}
+
 private func copy_str(s: String, buf: UnsafeMutablePointer<CChar>, length: UInt32) {
     let cs: [CChar]? = s.cString(using: String.Encoding.utf8)
 
