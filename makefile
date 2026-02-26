@@ -2,17 +2,28 @@ name_x86_64 := libvideocapture_x86_64.dylib
 name_arm64 := libvideocapture_arm64.dylib
 macos := apple-macosx10.10
 
+sources := Sources/videocapture-avfoundation/*.m
+headers := Sources/videocapture-avfoundation/include/*.h
+
+common_flags := -fobjc-arc -framework Foundation -framework AVFoundation -framework CoreMedia -framework CoreVideo
+
 all: $(name_x86_64) $(name_arm64)
 
-$(name_x86_64): Sources/**/*
-	swiftc Sources/videocapture-avfoundation/*.swift \
+$(name_x86_64): $(sources) $(headers)
+	clang $(sources) \
 		-target x86_64-$(macos) \
-		-emit-library -o $(name_x86_64) -Xlinker -install_name -Xlinker $(name_x86_64)
+		-dynamiclib $(common_flags) \
+		-I Sources/videocapture-avfoundation/include \
+		-o $(name_x86_64) \
+		-Wl,-install_name,$(name_x86_64)
 
-$(name_arm64): Sources/**/*
-	swiftc Sources/videocapture-avfoundation/*.swift \
+$(name_arm64): $(sources) $(headers)
+	clang $(sources) \
 		-target arm64-$(macos) \
-		-emit-library -o $(name_arm64) -Xlinker -install_name -Xlinker $(name_arm64)
+		-dynamiclib $(common_flags) \
+		-I Sources/videocapture-avfoundation/include \
+		-o $(name_arm64) \
+		-Wl,-install_name,$(name_arm64)
 
 test:
 	swift test
