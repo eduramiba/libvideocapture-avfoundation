@@ -1,4 +1,4 @@
-name: Build Swift library
+name: Build Objective-C library
 
 on: [push]
 

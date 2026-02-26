@@ -1,7 +1,17 @@
 import ctypes
+import os
+import platform
 import time
 
-lib = ctypes.CDLL('libvideocapture_x86_64.dylib')
+script_dir = os.path.dirname(os.path.abspath(__file__))
+machine = platform.machine().lower()
+if machine in ('arm64', 'aarch64'):
+    lib_name = 'libvideocapture_arm64.dylib'
+else:
+    lib_name = 'libvideocapture_x86_64.dylib'
+lib_path = os.path.join(script_dir, lib_name)
+
+lib = ctypes.CDLL(lib_path)
 lib.vcavf_get_device_unique_id.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_char), ctypes.c_uint32]
 lib.vcavf_get_device_model_id.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_char), ctypes.c_uint32]
 lib.vcavf_get_device_name.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_char), ctypes.c_uint32]

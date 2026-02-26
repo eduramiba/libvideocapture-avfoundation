@@ -354,6 +354,7 @@ static NSDictionary<NSNumber *, NSString *> *VCAVFFourCCMappings(void) {
         dict[@((uint32_t)kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)] = @"NV12";
 
         dict[@((uint32_t)kCMVideoCodecType_JPEG)] = @"JPEG";
+        dict[@((uint32_t)1684890161u)] = @"MJPG"; // 'dmb1' (JPEG OpenDML)
 #ifdef kCMVideoCodecType_JPEG_OpenDML
         dict[@((uint32_t)kCMVideoCodecType_JPEG_OpenDML)] = @"MJPG";
 #endif
