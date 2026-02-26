@@ -20,6 +20,30 @@ lib.vcavf_has_new_frame.restype = ctypes.c_bool
 lib.vcavf_grab_frame.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint32]
 lib.vcavf_grab_frame.restype = ctypes.c_bool
 
+def parse_format_resolution(fmt):
+    if fmt is None:
+        return None
+
+    parts = fmt.split(';', 1)
+    if len(parts) == 0:
+        return None
+
+    size = parts[0]
+    wh = size.split('x', 1)
+    if len(wh) != 2:
+        return None
+
+    try:
+        width = int(wh[0])
+        height = int(wh[1])
+    except ValueError:
+        return None
+
+    if width <= 0 or height <= 0:
+        return None
+
+    return (width, height)
+
 lib.vcavf_initialize()
 
 lib.vcavf_ask_videocapture_auth()
@@ -41,14 +65,27 @@ print(model_id)
 print(name)
 
 formats_count = lib.vcavf_get_device_formats_count(0)
+max_resolution = None
 
 for i in range(formats_count):
     lib.vcavf_get_device_format(0, i, buf, 100)
     format = ctypes.c_char_p.from_buffer(buf).value
 
     print(format)
+    resolution = parse_format_resolution(format)
+    if resolution is not None:
+        if max_resolution is None or (resolution[0] * resolution[1]) > (max_resolution[0] * max_resolution[1]):
+            max_resolution = resolution
 
-lib.vcavf_start_capture(0, 1280, 720)
+if max_resolution is not None:
+    capture_width = max_resolution[0]
+    capture_height = max_resolution[1]
+else:
+    capture_width = 1280
+    capture_height = 720
+
+print("Selected capture resolution: %dx%d" % (capture_width, capture_height))
+lib.vcavf_start_capture(0, capture_width, capture_height)
 
 time.sleep(1)
 for i in range(3):

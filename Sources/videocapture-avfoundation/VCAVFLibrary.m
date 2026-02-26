@@ -354,28 +354,13 @@ static NSDictionary<NSNumber *, NSString *> *VCAVFFourCCMappings(void) {
         dict[@((uint32_t)kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)] = @"NV12";
 
         dict[@((uint32_t)kCMVideoCodecType_JPEG)] = @"JPEG";
-        dict[@((uint32_t)1684890161u)] = @"MJPG"; // 'dmb1' (JPEG OpenDML)
-#ifdef kCMVideoCodecType_JPEG_OpenDML
         dict[@((uint32_t)kCMVideoCodecType_JPEG_OpenDML)] = @"MJPG";
-#endif
-#ifdef kCMVideoCodecType_H263
         dict[@((uint32_t)kCMVideoCodecType_H263)] = @"H263";
-#endif
-#ifdef kCMVideoCodecType_H264
         dict[@((uint32_t)kCMVideoCodecType_H264)] = @"H264";
-#endif
-#ifdef kCMVideoCodecType_HEVC
         dict[@((uint32_t)kCMVideoCodecType_HEVC)] = @"HEVC";
-#endif
-#ifdef kCMVideoCodecType_MPEG4Video
         dict[@((uint32_t)kCMVideoCodecType_MPEG4Video)] = @"MPG4";
-#endif
-#ifdef kCMVideoCodecType_MPEG2Video
         dict[@((uint32_t)kCMVideoCodecType_MPEG2Video)] = @"MPG2";
-#endif
-#ifdef kCMVideoCodecType_MPEG1Video
         dict[@((uint32_t)kCMVideoCodecType_MPEG1Video)] = @"MPG1";
-#endif
 
         mappings = [dict copy];
     });
