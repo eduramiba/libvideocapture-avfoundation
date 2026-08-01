@@ -21,6 +21,7 @@ lib.vcavf_devices_count.restype = ctypes.c_uint32
 lib.vcavf_get_device_unique_id.argtypes = [ctypes.c_uint32, char_p, ctypes.c_uint32]
 lib.vcavf_get_device_model_id.argtypes = [ctypes.c_uint32, char_p, ctypes.c_uint32]
 lib.vcavf_get_device_name.argtypes = [ctypes.c_uint32, char_p, ctypes.c_uint32]
+lib.vcavf_get_device_type.argtypes = [ctypes.c_uint32, char_p, ctypes.c_uint32]
 lib.vcavf_get_device_formats_count.argtypes = [ctypes.c_uint32]
 lib.vcavf_get_device_formats_count.restype = ctypes.c_uint32
 lib.vcavf_get_device_format.argtypes = [ctypes.c_uint32, ctypes.c_uint32, char_p, ctypes.c_uint32]
@@ -113,6 +114,14 @@ def sampled_sum(buffer):
 assert lib.vcavf_initialize(), "AVFoundation initialization failed"
 device_count = lib.vcavf_devices_count()
 assert device_count > 0, "No video capture device is available"
+
+device_metadata = []
+for metadata_index in range(device_count):
+    name = get_string(lib.vcavf_get_device_name, metadata_index)
+    device_type = get_string(lib.vcavf_get_device_type, metadata_index)
+    assert device_type, "Camera device type must not be empty"
+    device_metadata.append((name, device_type))
+    print("Discovered:", metadata_index, name, "[", device_type, "]")
 
 device_index = 0
 print("Device:", get_string(lib.vcavf_get_device_name, device_index))

@@ -55,10 +55,12 @@ static const int32_t STATUS_DENIED = -1;
 @property(nonatomic, copy, readonly) NSString *uniqueId;
 @property(nonatomic, copy, readonly) NSString *modelId;
 @property(nonatomic, copy, readonly) NSString *name;
+@property(nonatomic, copy, readonly) NSString *deviceType;
 @property(nonatomic, copy, readonly) NSArray<VCAVFVideoFormat *> *formats;
 - (instancetype)initWithUniqueId:(NSString *)uniqueId
                           modelId:(NSString *)modelId
                              name:(NSString *)name
+                       deviceType:(NSString *)deviceType
                           formats:(NSArray<VCAVFVideoFormat *> *)formats;
 @end
 
@@ -66,12 +68,14 @@ static const int32_t STATUS_DENIED = -1;
 - (instancetype)initWithUniqueId:(NSString *)uniqueId
                           modelId:(NSString *)modelId
                              name:(NSString *)name
+                       deviceType:(NSString *)deviceType
                           formats:(NSArray<VCAVFVideoFormat *> *)formats {
     self = [super init];
     if (self != nil) {
         _uniqueId = [uniqueId copy];
         _modelId = [modelId copy];
         _name = [name copy];
+        _deviceType = [deviceType copy];
         _formats = [formats copy];
     }
     return self;
@@ -1148,6 +1152,7 @@ static NSArray<VCAVFVideoDevice *> *VCAVFListDevices(void) {
             VCAVFVideoDevice *camera = [[VCAVFVideoDevice alloc] initWithUniqueId:device.uniqueID
                                                                            modelId:device.modelID
                                                                               name:device.localizedName
+                                                                        deviceType:device.deviceType
                                                                            formats:formats];
             [cameras addObject:camera];
         }
@@ -1291,6 +1296,17 @@ void vcavf_get_device_name(uint32_t deviceIndex, char *buf, uint32_t length) {
         }
 
         VCAVFCopyString(device.name, buf, length);
+    }
+}
+
+void vcavf_get_device_type(uint32_t deviceIndex, char *buf, uint32_t length) {
+    @autoreleasepool {
+        VCAVFVideoDevice *device = VCAVFDeviceAtIndex(deviceIndex);
+        if (device == nil) {
+            return;
+        }
+
+        VCAVFCopyString(device.deviceType, buf, length);
     }
 }
 

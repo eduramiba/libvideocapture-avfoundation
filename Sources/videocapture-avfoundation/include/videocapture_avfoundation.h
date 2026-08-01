@@ -19,6 +19,7 @@ uint32_t vcavf_devices_count(void);
 void vcavf_get_device_unique_id(uint32_t deviceIndex, char *buf, uint32_t length);
 void vcavf_get_device_model_id(uint32_t deviceIndex, char *buf, uint32_t length);
 void vcavf_get_device_name(uint32_t deviceIndex, char *buf, uint32_t length);
+void vcavf_get_device_type(uint32_t deviceIndex, char *buf, uint32_t length);
 
 uint32_t vcavf_get_device_formats_count(uint32_t deviceIndex);
 void vcavf_get_device_format(uint32_t deviceIndex, uint32_t formatIndex, char *buf, uint32_t length);
