@@ -9,6 +9,44 @@
 extern "C" {
 #endif
 
+typedef int32_t vcavf_result_t;
+
+#define VCAVF_OK 0
+#define VCAVF_ERR_DEVICE_NOT_FOUND -1
+#define VCAVF_ERR_FORMAT_NOT_FOUND -2
+#define VCAVF_ERR_OPENING_DEVICE -3
+#define VCAVF_ERR_ALREADY_STARTED -4
+#define VCAVF_ERR_NOT_STARTED -5
+#define VCAVF_ERR_NOT_INITIALIZED -6
+#define VCAVF_ERR_INVALID_ARGUMENT -7
+#define VCAVF_ERR_CONTROL_NOT_SUPPORTED -9
+#define VCAVF_ERR_CONTROL_IO -12
+#define VCAVF_ERR_UNKNOWN -512
+
+#define VCAVF_CONTROL_FLAG_AUTO 0x0001
+#define VCAVF_CONTROL_FLAG_MANUAL 0x0002
+
+// These IDs intentionally match DirectShow VideoProcAmp property IDs so
+// cross-platform clients can expose one UI and persistence format.
+#define VCAVF_VIDEO_PROCAMP_BRIGHTNESS 0
+#define VCAVF_VIDEO_PROCAMP_CONTRAST 1
+#define VCAVF_VIDEO_PROCAMP_HUE 2
+#define VCAVF_VIDEO_PROCAMP_SATURATION 3
+#define VCAVF_VIDEO_PROCAMP_SHARPNESS 4
+#define VCAVF_VIDEO_PROCAMP_GAMMA 5
+#define VCAVF_VIDEO_PROCAMP_COLORENABLE 6
+#define VCAVF_VIDEO_PROCAMP_WHITEBALANCE 7
+#define VCAVF_VIDEO_PROCAMP_BACKLIGHTCOMPENSATION 8
+#define VCAVF_VIDEO_PROCAMP_GAIN 9
+
+#define VCAVF_CAMERA_CONTROL_PAN 0
+#define VCAVF_CAMERA_CONTROL_TILT 1
+#define VCAVF_CAMERA_CONTROL_ROLL 2
+#define VCAVF_CAMERA_CONTROL_ZOOM 3
+#define VCAVF_CAMERA_CONTROL_EXPOSURE 4
+#define VCAVF_CAMERA_CONTROL_IRIS 5
+#define VCAVF_CAMERA_CONTROL_FOCUS 6
+
 bool vcavf_initialize(void);
 
 int32_t vcavf_has_videocapture_auth(void);
@@ -77,6 +115,42 @@ int32_t vcavf_set_frame_callback(
     bool exclusive);
 bool vcavf_grab_frame_native(uint32_t deviceIndex, uint8_t *buffer, uint32_t availableBytes);
 bool vcavf_grab_frame_bgra(uint32_t deviceIndex, uint8_t *buffer, uint32_t availableBytes);
+
+// On macOS these shared control IDs map to CoreMediaIO feature controls and
+// use the device driver's native value/range. Fractional native ranges are
+// scaled to integers so the API remains ABI-compatible with DirectShow.
+// Unsupported properties return VCAVF_ERR_CONTROL_NOT_SUPPORTED.
+int32_t vcavf_get_video_proc_amp_range(uint32_t deviceIndex,
+                                       int32_t property,
+                                       int32_t *minValue,
+                                       int32_t *maxValue,
+                                       int32_t *step,
+                                       int32_t *defaultValue,
+                                       int32_t *capsFlags);
+int32_t vcavf_get_video_proc_amp(uint32_t deviceIndex,
+                                 int32_t property,
+                                 int32_t *value,
+                                 int32_t *flags);
+int32_t vcavf_set_video_proc_amp(uint32_t deviceIndex,
+                                 int32_t property,
+                                 int32_t value,
+                                 int32_t flags);
+
+int32_t vcavf_get_camera_control_range(uint32_t deviceIndex,
+                                       int32_t property,
+                                       int32_t *minValue,
+                                       int32_t *maxValue,
+                                       int32_t *step,
+                                       int32_t *defaultValue,
+                                       int32_t *capsFlags);
+int32_t vcavf_get_camera_control(uint32_t deviceIndex,
+                                 int32_t property,
+                                 int32_t *value,
+                                 int32_t *flags);
+int32_t vcavf_set_camera_control(uint32_t deviceIndex,
+                                 int32_t property,
+                                 int32_t value,
+                                 int32_t flags);
 
 #ifdef __cplusplus
 }

@@ -1,11 +1,13 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Accelerate/Accelerate.h>
+#import <CoreMediaIO/CoreMediaIO.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
 #import <ImageIO/ImageIO.h>
 #import <dispatch/dispatch.h>
+#import <math.h>
 #import <stdbool.h>
 #import <stdint.h>
 #import <stdlib.h>
@@ -19,7 +21,10 @@ static const int32_t ERROR_FORMAT_NOT_FOUND = -2;
 static const int32_t ERROR_OPENING_DEVICE = -3;
 static const int32_t ERROR_SESSION_ALREADY_STARTED = -4;
 static const int32_t ERROR_SESSION_NOT_STARTED = -5;
-static const int32_t ERROR_INVALID_ARGUMENT = -7;
+static const int32_t ERROR_NOT_INITIALIZED = VCAVF_ERR_NOT_INITIALIZED;
+static const int32_t ERROR_INVALID_ARGUMENT = VCAVF_ERR_INVALID_ARGUMENT;
+static const int32_t ERROR_CONTROL_NOT_SUPPORTED = VCAVF_ERR_CONTROL_NOT_SUPPORTED;
+static const int32_t ERROR_CONTROL_IO = VCAVF_ERR_CONTROL_IO;
 static const int32_t STATUS_AUTHORIZED = 0;
 static const int32_t STATUS_NOT_DETERMINED = -2;
 static const int32_t STATUS_DENIED = -1;
@@ -1076,6 +1081,9 @@ static void VCAVFYuvToBgra(
 
 static NSMutableArray<VCAVFVideoDevice *> *gDevices;
 static NSMutableDictionary<NSString *, VCAVFVideoCaptureSession *> *gSessions;
+static NSMutableDictionary<NSString *, NSNumber *> *gControlDefaults;
+static NSMutableDictionary<NSString *, NSNumber *> *gControlObjects;
+static NSMutableDictionary<NSString *, NSValue *> *gControlFeatures;
 
 static NSDictionary<NSNumber *, NSString *> *VCAVFFourCCMappings(void) {
     static NSDictionary<NSNumber *, NSString *> *mappings = nil;
@@ -1224,6 +1232,610 @@ static VCAVFVideoDevice *VCAVFDeviceAtIndex(uint32_t deviceIndex) {
     return gDevices[deviceIndex];
 }
 
+typedef NS_ENUM(NSInteger, VCAVFControlAPI) {
+    VCAVFControlAPIVideoProcAmp = 0,
+    VCAVFControlAPICameraControl = 1,
+};
+
+typedef NS_ENUM(NSInteger, VCAVFControlRequestType) {
+    VCAVFControlRequestTypeGetRange = 0,
+    VCAVFControlRequestTypeGet = 1,
+    VCAVFControlRequestTypeSet = 2,
+};
+
+typedef struct VCAVFControlPayload {
+    int32_t value;
+    int32_t flags;
+    int32_t minValue;
+    int32_t maxValue;
+    int32_t step;
+    int32_t defaultValue;
+    int32_t capsFlags;
+} VCAVFControlPayload;
+
+static BOOL VCAVFControlWantsAuto(int32_t flags) {
+    return (flags & VCAVF_CONTROL_FLAG_AUTO) != 0 &&
+        (flags & VCAVF_CONTROL_FLAG_MANUAL) == 0;
+}
+
+
+typedef struct VCAVFCMIOFeatureControl {
+    CMIOObjectID objectID;
+    CMIOObjectPropertySelector valueSelector;
+    AudioValueRange range;
+    double scale;
+    Float32 defaultValue;
+    BOOL valueSettable;
+    BOOL autoSettable;
+} VCAVFCMIOFeatureControl;
+
+static CMIOObjectPropertyAddress VCAVFCMIOAddress(
+    CMIOObjectPropertySelector selector) {
+    return (CMIOObjectPropertyAddress) {
+        .mSelector = selector,
+        .mScope = kCMIOObjectPropertyScopeGlobal,
+        .mElement = kCMIOObjectPropertyElementMain,
+    };
+}
+
+static BOOL VCAVFCMIOGetProperty(
+    CMIOObjectID objectID,
+    CMIOObjectPropertySelector selector,
+    UInt32 dataSize,
+    void *data) {
+    CMIOObjectPropertyAddress address = VCAVFCMIOAddress(selector);
+    if (!CMIOObjectHasProperty(objectID, &address)) {
+        return NO;
+    }
+    UInt32 dataUsed = 0;
+    OSStatus status = CMIOObjectGetPropertyData(
+        objectID, &address, 0, NULL, dataSize, &dataUsed, data);
+    return status == noErr && dataUsed == dataSize;
+}
+
+static BOOL VCAVFCMIOPropertyIsSettable(
+    CMIOObjectID objectID,
+    CMIOObjectPropertySelector selector) {
+    CMIOObjectPropertyAddress address = VCAVFCMIOAddress(selector);
+    if (!CMIOObjectHasProperty(objectID, &address)) {
+        return NO;
+    }
+    Boolean settable = false;
+    return CMIOObjectIsPropertySettable(objectID, &address, &settable) == noErr &&
+        settable;
+}
+
+static BOOL VCAVFCMIOSetProperty(
+    CMIOObjectID objectID,
+    CMIOObjectPropertySelector selector,
+    UInt32 dataSize,
+    const void *data) {
+    CMIOObjectPropertyAddress address = VCAVFCMIOAddress(selector);
+    return CMIOObjectSetPropertyData(
+        objectID, &address, 0, NULL, dataSize, data) == noErr;
+}
+
+static int32_t VCAVFResolveCMIODevice(
+    uint32_t deviceIndex,
+    CMIODeviceID *cmioDevice) {
+    if (cmioDevice == NULL) {
+        return ERROR_INVALID_ARGUMENT;
+    }
+    *cmioDevice = kCMIODeviceUnknown;
+    VCAVFVideoDevice *device = VCAVFDeviceAtIndex(deviceIndex);
+    if (gDevices == nil) {
+        return ERROR_NOT_INITIALIZED;
+    }
+    if (device == nil) {
+        return ERROR_DEVICE_NOT_FOUND;
+    }
+
+    CMIOObjectPropertyAddress devicesAddress = VCAVFCMIOAddress(
+        kCMIOHardwarePropertyDevices);
+    UInt32 devicesSize = 0;
+    OSStatus status = CMIOObjectGetPropertyDataSize(
+        kCMIOObjectSystemObject,
+        &devicesAddress,
+        0,
+        NULL,
+        &devicesSize);
+    if (status != noErr || devicesSize == 0 ||
+        devicesSize % sizeof(CMIODeviceID) != 0) {
+        return ERROR_DEVICE_NOT_FOUND;
+    }
+
+    CMIODeviceID *deviceIDs = calloc(1, devicesSize);
+    if (deviceIDs == NULL) {
+        return ERROR_CONTROL_IO;
+    }
+    UInt32 dataUsed = 0;
+    status = CMIOObjectGetPropertyData(
+        kCMIOObjectSystemObject,
+        &devicesAddress,
+        0,
+        NULL,
+        devicesSize,
+        &dataUsed,
+        deviceIDs);
+    if (status != noErr) {
+        free(deviceIDs);
+        return ERROR_DEVICE_NOT_FOUND;
+    }
+
+    NSUInteger count = dataUsed / sizeof(CMIODeviceID);
+    for (NSUInteger i = 0; i < count; ++i) {
+        CFStringRef deviceUID = NULL;
+        if (!VCAVFCMIOGetProperty(
+                deviceIDs[i],
+                kCMIODevicePropertyDeviceUID,
+                sizeof(deviceUID),
+                &deviceUID) || deviceUID == NULL) {
+            continue;
+        }
+        BOOL matches = [device.uniqueId isEqualToString:(__bridge NSString *)deviceUID];
+        CFRelease(deviceUID);
+        if (matches) {
+            *cmioDevice = deviceIDs[i];
+            free(deviceIDs);
+            return RESULT_OK;
+        }
+    }
+    free(deviceIDs);
+    return ERROR_DEVICE_NOT_FOUND;
+}
+
+static NSUInteger VCAVFCMIOClassIDsForControl(
+    VCAVFControlAPI api,
+    int32_t property,
+    CMIOClassID classIDs[2]) {
+    if (api == VCAVFControlAPIVideoProcAmp) {
+        switch (property) {
+            case VCAVF_VIDEO_PROCAMP_BRIGHTNESS:
+                classIDs[0] = kCMIOBrightnessControlClassID;
+                return 1;
+            case VCAVF_VIDEO_PROCAMP_CONTRAST:
+                classIDs[0] = kCMIOContrastControlClassID;
+                return 1;
+            case VCAVF_VIDEO_PROCAMP_HUE:
+                classIDs[0] = kCMIOHueControlClassID;
+                return 1;
+            case VCAVF_VIDEO_PROCAMP_SATURATION:
+                classIDs[0] = kCMIOSaturationControlClassID;
+                return 1;
+            case VCAVF_VIDEO_PROCAMP_SHARPNESS:
+                classIDs[0] = kCMIOSharpnessControlClassID;
+                return 1;
+            case VCAVF_VIDEO_PROCAMP_GAMMA:
+                classIDs[0] = kCMIOGammaControlClassID;
+                return 1;
+            case VCAVF_VIDEO_PROCAMP_WHITEBALANCE:
+                classIDs[0] = kCMIOWhiteBalanceControlClassID;
+                classIDs[1] = kCMIOTemperatureControlClassID;
+                return 2;
+            case VCAVF_VIDEO_PROCAMP_BACKLIGHTCOMPENSATION:
+                classIDs[0] = kCMIOBacklightCompensationControlClassID;
+                return 1;
+            case VCAVF_VIDEO_PROCAMP_GAIN:
+                classIDs[0] = kCMIOGainControlClassID;
+                return 1;
+            default:
+                return 0;
+        }
+    }
+
+    switch (property) {
+        case VCAVF_CAMERA_CONTROL_PAN:
+            classIDs[0] = kCMIOPanControlClassID;
+            return 1;
+        case VCAVF_CAMERA_CONTROL_TILT:
+            classIDs[0] = kCMIOTiltControlClassID;
+            return 1;
+        case VCAVF_CAMERA_CONTROL_ROLL:
+            classIDs[0] = kCMIORollAbsoluteControlClassID;
+            return 1;
+        case VCAVF_CAMERA_CONTROL_ZOOM:
+            classIDs[0] = kCMIOZoomControlClassID;
+            return 1;
+        case VCAVF_CAMERA_CONTROL_EXPOSURE:
+            classIDs[0] = kCMIOExposureControlClassID;
+            classIDs[1] = kCMIOShutterControlClassID;
+            return 2;
+        case VCAVF_CAMERA_CONTROL_IRIS:
+            classIDs[0] = kCMIOIrisControlClassID;
+            return 1;
+        case VCAVF_CAMERA_CONTROL_FOCUS:
+            classIDs[0] = kCMIOFocusControlClassID;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static NSString *VCAVFControlKey(
+    uint32_t deviceIndex,
+    VCAVFControlAPI api,
+    int32_t property) {
+    VCAVFVideoDevice *device = VCAVFDeviceAtIndex(deviceIndex);
+    if (device == nil) {
+        return nil;
+    }
+    return [NSString stringWithFormat:
+        @"%@:%ld:%d",
+        device.uniqueId,
+        (long)api,
+        property];
+}
+
+static NSString *VCAVFControlClassKey(
+    uint32_t deviceIndex,
+    CMIOClassID classID) {
+    VCAVFVideoDevice *device = VCAVFDeviceAtIndex(deviceIndex);
+    if (device == nil) {
+        return nil;
+    }
+    return [NSString stringWithFormat:
+        @"%@:%u",
+        device.uniqueId,
+        (unsigned int)classID];
+}
+
+static int32_t VCAVFFindCMIOControl(
+    uint32_t deviceIndex,
+    VCAVFControlAPI api,
+    int32_t property,
+    CMIOObjectID *controlObject) {
+    if (controlObject == NULL) {
+        return ERROR_INVALID_ARGUMENT;
+    }
+    *controlObject = kCMIOObjectUnknown;
+
+    CMIOClassID classIDs[2] = {0};
+    NSUInteger classCount = VCAVFCMIOClassIDsForControl(api, property, classIDs);
+    if (classCount == 0) {
+        return ERROR_CONTROL_NOT_SUPPORTED;
+    }
+    if (VCAVFDeviceAtIndex(deviceIndex) == nil) {
+        return ERROR_DEVICE_NOT_FOUND;
+    }
+    for (NSUInteger classIndex = 0; classIndex < classCount; ++classIndex) {
+        NSString *classKey = VCAVFControlClassKey(
+            deviceIndex, classIDs[classIndex]);
+        NSNumber *cachedObjectNumber = nil;
+        @synchronized(gControlObjects) {
+            cachedObjectNumber = gControlObjects[classKey];
+        }
+        if (cachedObjectNumber == nil) {
+            continue;
+        }
+        // Some UVC drivers temporarily stop publishing a control object's
+        // class or remove it from OwnedObjects after a feature-state write.
+        // The original object ID remains the valid endpoint for the lifetime
+        // of the CMIO device, so re-enumerating it here can turn a successful
+        // write into a spurious "not supported" readback result.
+        *controlObject = cachedObjectNumber.unsignedIntValue;
+        return RESULT_OK;
+    }
+    CMIODeviceID deviceID = kCMIODeviceUnknown;
+    int32_t result = VCAVFResolveCMIODevice(deviceIndex, &deviceID);
+    if (result != RESULT_OK) {
+        return result;
+    }
+
+    CMIOObjectPropertyAddress ownedAddress = VCAVFCMIOAddress(
+        kCMIOObjectPropertyOwnedObjects);
+    CMIOClassID qualifier = kCMIOControlClassID;
+    UInt32 controlsSize = 0;
+    OSStatus status = CMIOObjectGetPropertyDataSize(
+        deviceID,
+        &ownedAddress,
+        sizeof(qualifier),
+        &qualifier,
+        &controlsSize);
+    if (status != noErr || controlsSize == 0 ||
+        controlsSize % sizeof(CMIOObjectID) != 0) {
+        return ERROR_CONTROL_NOT_SUPPORTED;
+    }
+
+    CMIOObjectID *controls = calloc(1, controlsSize);
+    if (controls == NULL) {
+        return ERROR_CONTROL_IO;
+    }
+    UInt32 dataUsed = 0;
+    status = CMIOObjectGetPropertyData(
+        deviceID,
+        &ownedAddress,
+        sizeof(qualifier),
+        &qualifier,
+        controlsSize,
+        &dataUsed,
+        controls);
+    if (status != noErr) {
+        free(controls);
+        return ERROR_CONTROL_IO;
+    }
+
+    NSUInteger controlCount = dataUsed / sizeof(CMIOObjectID);
+    for (NSUInteger controlIndex = 0; controlIndex < controlCount; ++controlIndex) {
+        CMIOClassID controlClass = 0;
+        if (VCAVFCMIOGetProperty(
+                controls[controlIndex],
+                kCMIOObjectPropertyClass,
+                sizeof(controlClass),
+                &controlClass)) {
+            NSString *classKey = VCAVFControlClassKey(deviceIndex, controlClass);
+            @synchronized(gControlObjects) {
+                gControlObjects[classKey] = @(controls[controlIndex]);
+            }
+        }
+    }
+    for (NSUInteger classIndex = 0; classIndex < classCount; ++classIndex) {
+        for (NSUInteger controlIndex = 0; controlIndex < controlCount; ++controlIndex) {
+            CMIOClassID controlClass = 0;
+            if (VCAVFCMIOGetProperty(
+                    controls[controlIndex],
+                    kCMIOObjectPropertyClass,
+                    sizeof(controlClass),
+                    &controlClass) && controlClass == classIDs[classIndex]) {
+                *controlObject = controls[controlIndex];
+                free(controls);
+                return RESULT_OK;
+            }
+        }
+    }
+    free(controls);
+    return ERROR_CONTROL_NOT_SUPPORTED;
+}
+
+static double VCAVFCMIOScaleForRange(
+    AudioValueRange range,
+    BOOL usesNativeValue,
+    VCAVFControlAPI api,
+    int32_t property) {
+    double minimum = range.mMinimum;
+    double maximum = range.mMaximum;
+    BOOL integralRange = fabs(minimum - round(minimum)) < 0.0001 &&
+        fabs(maximum - round(maximum)) < 0.0001 &&
+        maximum - minimum > 1.0;
+    BOOL isBacklightSwitch =
+        api == VCAVFControlAPIVideoProcAmp &&
+        property == VCAVF_VIDEO_PROCAMP_BACKLIGHTCOMPENSATION &&
+        fabs(minimum) < 0.0001 &&
+        fabs(maximum - 1.0) < 0.0001;
+    if (isBacklightSwitch || (usesNativeValue && integralRange)) {
+        return 1.0;
+    }
+
+    double span = maximum - minimum;
+    double scale = 1.0;
+    while (span * scale < 1000.0 && scale < 1000000.0) {
+        scale *= 10.0;
+    }
+    return scale;
+}
+
+static BOOL VCAVFInt32ForCMIOValue(
+    double value,
+    double scale,
+    int32_t *output) {
+    double scaled = value * scale;
+    if (!isfinite(scaled) || scaled < INT32_MIN || scaled > INT32_MAX) {
+        return NO;
+    }
+    *output = (int32_t)lround(scaled);
+    return YES;
+}
+
+static int32_t VCAVFResolveCMIOFeatureControl(
+    uint32_t deviceIndex,
+    VCAVFControlAPI api,
+    int32_t property,
+    VCAVFCMIOFeatureControl *feature) {
+    if (feature == NULL) {
+        return ERROR_INVALID_ARGUMENT;
+    }
+    memset(feature, 0, sizeof(*feature));
+
+    NSString *controlKey = VCAVFControlKey(deviceIndex, api, property);
+    if (controlKey != nil) {
+        NSValue *savedFeature = nil;
+        @synchronized(gControlFeatures) {
+            savedFeature = gControlFeatures[controlKey];
+        }
+        if (savedFeature != nil) {
+            [savedFeature getValue:feature size:sizeof(*feature)];
+            return RESULT_OK;
+        }
+    }
+
+    int32_t result = VCAVFFindCMIOControl(
+        deviceIndex, api, property, &feature->objectID);
+    if (result != RESULT_OK) {
+        return result;
+    }
+
+    const CMIOObjectPropertySelector valueSelectors[] = {
+        kCMIOFeatureControlPropertyNativeValue,
+        kCMIOFeatureControlPropertyAbsoluteValue,
+    };
+    const CMIOObjectPropertySelector rangeSelectors[] = {
+        kCMIOFeatureControlPropertyNativeRange,
+        kCMIOFeatureControlPropertyAbsoluteRange,
+    };
+    Float32 currentValue = 0.0f;
+    BOOL foundValue = NO;
+    for (NSUInteger i = 0; i < 2; ++i) {
+        if (VCAVFCMIOGetProperty(
+                feature->objectID,
+                valueSelectors[i],
+                sizeof(currentValue),
+                &currentValue) &&
+            VCAVFCMIOGetProperty(
+                feature->objectID,
+                rangeSelectors[i],
+                sizeof(feature->range),
+                &feature->range)) {
+            feature->valueSelector = valueSelectors[i];
+            foundValue = YES;
+            break;
+        }
+    }
+    if (!foundValue || !isfinite(currentValue) ||
+        !isfinite(feature->range.mMinimum) ||
+        !isfinite(feature->range.mMaximum) ||
+        feature->range.mMaximum <= feature->range.mMinimum) {
+        return ERROR_CONTROL_NOT_SUPPORTED;
+    }
+
+    feature->valueSettable = VCAVFCMIOPropertyIsSettable(
+        feature->objectID, feature->valueSelector);
+    feature->autoSettable = VCAVFCMIOPropertyIsSettable(
+        feature->objectID, kCMIOFeatureControlPropertyAutomaticManual);
+    if (!feature->valueSettable) {
+        return ERROR_CONTROL_NOT_SUPPORTED;
+    }
+    feature->scale = VCAVFCMIOScaleForRange(
+        feature->range,
+        feature->valueSelector == kCMIOFeatureControlPropertyNativeValue,
+        api,
+        property);
+    NSNumber *savedDefault = nil;
+    @synchronized(gControlDefaults) {
+        savedDefault = gControlDefaults[controlKey];
+        if (savedDefault == nil) {
+            savedDefault = @(currentValue);
+            gControlDefaults[controlKey] = savedDefault;
+        }
+    }
+    feature->defaultValue = savedDefault.floatValue;
+    if (controlKey != nil) {
+        NSValue *savedFeature = [NSValue valueWithBytes:feature
+                                              objCType:@encode(VCAVFCMIOFeatureControl)];
+        @synchronized(gControlFeatures) {
+            gControlFeatures[controlKey] = savedFeature;
+        }
+    }
+    return RESULT_OK;
+}
+
+static int32_t VCAVFHandleCMIOControlRequest(
+    uint32_t deviceIndex,
+    VCAVFControlAPI api,
+    VCAVFControlRequestType requestType,
+    int32_t property,
+    VCAVFControlPayload *payload) {
+    if (payload == NULL) {
+        return ERROR_INVALID_ARGUMENT;
+    }
+
+    VCAVFCMIOFeatureControl feature;
+    int32_t result = VCAVFResolveCMIOFeatureControl(
+        deviceIndex, api, property, &feature);
+    if (result != RESULT_OK) {
+        return result;
+    }
+
+    Float32 currentValue = 0.0f;
+    if (!VCAVFCMIOGetProperty(
+            feature.objectID,
+            feature.valueSelector,
+            sizeof(currentValue),
+            &currentValue)) {
+        return ERROR_CONTROL_IO;
+    }
+    UInt32 automatic = 0;
+    BOOL hasAutomaticMode = VCAVFCMIOGetProperty(
+        feature.objectID,
+        kCMIOFeatureControlPropertyAutomaticManual,
+        sizeof(automatic),
+        &automatic);
+
+    if (requestType == VCAVFControlRequestTypeGetRange) {
+        if (!VCAVFInt32ForCMIOValue(
+                feature.range.mMinimum, feature.scale, &payload->minValue) ||
+            !VCAVFInt32ForCMIOValue(
+                feature.range.mMaximum, feature.scale, &payload->maxValue) ||
+            !VCAVFInt32ForCMIOValue(
+                feature.defaultValue, feature.scale, &payload->defaultValue)) {
+            return ERROR_CONTROL_NOT_SUPPORTED;
+        }
+        payload->step = 1;
+        payload->capsFlags =
+            (feature.valueSettable ? VCAVF_CONTROL_FLAG_MANUAL : 0) |
+            (feature.autoSettable ? VCAVF_CONTROL_FLAG_AUTO : 0);
+        return RESULT_OK;
+    }
+
+    if (requestType == VCAVFControlRequestTypeGet) {
+        if (!VCAVFInt32ForCMIOValue(
+                currentValue, feature.scale, &payload->value)) {
+            return ERROR_CONTROL_IO;
+        }
+        payload->flags = hasAutomaticMode && automatic != 0
+            ? VCAVF_CONTROL_FLAG_AUTO
+            : VCAVF_CONTROL_FLAG_MANUAL;
+        return RESULT_OK;
+    }
+
+    BOOL wantsAuto = VCAVFControlWantsAuto(payload->flags);
+    // Do not toggle kCMIOFeatureControlPropertyOnOff here. It is an
+    // independent hardware feature switch, not a prerequisite for assigning
+    // a manual value. Certain UVC DAL drivers (notably Dino-Lite Edge) remove
+    // the feature control from their registry after that switch is written,
+    // which makes all later slider updates and even restoration fail.
+    if (wantsAuto) {
+        if (!feature.autoSettable) {
+            return ERROR_CONTROL_NOT_SUPPORTED;
+        }
+        if (hasAutomaticMode && automatic != 0) {
+            return RESULT_OK;
+        }
+        UInt32 automaticValue = 1;
+        return VCAVFCMIOSetProperty(
+            feature.objectID,
+            kCMIOFeatureControlPropertyAutomaticManual,
+            sizeof(automaticValue),
+            &automaticValue)
+            ? RESULT_OK
+            : ERROR_CONTROL_IO;
+    }
+    if (!feature.valueSettable) {
+        return ERROR_CONTROL_NOT_SUPPORTED;
+    }
+
+    if (feature.autoSettable && (!hasAutomaticMode || automatic != 0)) {
+        UInt32 manualValue = 0;
+        if (!VCAVFCMIOSetProperty(
+                feature.objectID,
+                kCMIOFeatureControlPropertyAutomaticManual,
+                sizeof(manualValue),
+                &manualValue)) {
+            return ERROR_CONTROL_IO;
+        }
+    }
+    double nativeValue = (double)payload->value / feature.scale;
+    nativeValue = MIN(
+        MAX(nativeValue, feature.range.mMinimum),
+        feature.range.mMaximum);
+    Float32 targetValue = (Float32)nativeValue;
+    return VCAVFCMIOSetProperty(
+        feature.objectID,
+        feature.valueSelector,
+        sizeof(targetValue),
+        &targetValue)
+        ? RESULT_OK
+        : ERROR_CONTROL_IO;
+}
+
+static int32_t VCAVFExecuteControlRequest(
+    VCAVFControlAPI api,
+    uint32_t deviceIndex,
+    VCAVFControlRequestType requestType,
+    int32_t property,
+    VCAVFControlPayload *payload) {
+    return VCAVFHandleCMIOControlRequest(
+        deviceIndex, api, requestType, property, payload);
+}
+
 bool vcavf_initialize(void) {
     @autoreleasepool {
         @try {
@@ -1234,6 +1846,19 @@ bool vcavf_initialize(void) {
                 gSessions = [[NSMutableDictionary alloc] init];
             } else {
                 [gSessions removeAllObjects];
+            }
+            if (gControlDefaults == nil) {
+                gControlDefaults = [[NSMutableDictionary alloc] init];
+            }
+            if (gControlObjects == nil) {
+                gControlObjects = [[NSMutableDictionary alloc] init];
+            } else {
+                [gControlObjects removeAllObjects];
+            }
+            if (gControlFeatures == nil) {
+                gControlFeatures = [[NSMutableDictionary alloc] init];
+            } else {
+                [gControlFeatures removeAllObjects];
             }
 
             return true;
@@ -1590,5 +2215,180 @@ uint32_t vcavf_frame_plane_stride(uint32_t deviceIndex, uint32_t planeIndex) {
         VCAVFVideoCaptureSession *session =
             device == nil ? nil : gSessions[device.uniqueId];
         return session == nil ? 0 : [session planeStride:planeIndex];
+    }
+}
+
+static int32_t VCAVFGetControlRange(
+    VCAVFControlAPI api,
+    uint32_t deviceIndex,
+    int32_t property,
+    int32_t *minValue,
+    int32_t *maxValue,
+    int32_t *step,
+    int32_t *defaultValue,
+    int32_t *capsFlags) {
+    if (minValue == NULL || maxValue == NULL || step == NULL ||
+        defaultValue == NULL || capsFlags == NULL) {
+        return ERROR_INVALID_ARGUMENT;
+    }
+    VCAVFControlPayload payload = {0};
+    int32_t result = VCAVFExecuteControlRequest(
+        api,
+        deviceIndex,
+        VCAVFControlRequestTypeGetRange,
+        property,
+        &payload);
+    if (result != RESULT_OK) {
+        return result;
+    }
+    *minValue = payload.minValue;
+    *maxValue = payload.maxValue;
+    *step = payload.step;
+    *defaultValue = payload.defaultValue;
+    *capsFlags = payload.capsFlags;
+    return RESULT_OK;
+}
+
+static int32_t VCAVFGetControl(
+    VCAVFControlAPI api,
+    uint32_t deviceIndex,
+    int32_t property,
+    int32_t *value,
+    int32_t *flags) {
+    if (value == NULL || flags == NULL) {
+        return ERROR_INVALID_ARGUMENT;
+    }
+    VCAVFControlPayload payload = {0};
+    int32_t result = VCAVFExecuteControlRequest(
+        api,
+        deviceIndex,
+        VCAVFControlRequestTypeGet,
+        property,
+        &payload);
+    if (result != RESULT_OK) {
+        return result;
+    }
+    *value = payload.value;
+    *flags = payload.flags;
+    return RESULT_OK;
+}
+
+static int32_t VCAVFSetControl(
+    VCAVFControlAPI api,
+    uint32_t deviceIndex,
+    int32_t property,
+    int32_t value,
+    int32_t flags) {
+    VCAVFControlPayload payload = {
+        .value = value,
+        .flags = flags,
+    };
+    return VCAVFExecuteControlRequest(
+        api,
+        deviceIndex,
+        VCAVFControlRequestTypeSet,
+        property,
+        &payload);
+}
+
+int32_t vcavf_get_video_proc_amp_range(
+    uint32_t deviceIndex,
+    int32_t property,
+    int32_t *minValue,
+    int32_t *maxValue,
+    int32_t *step,
+    int32_t *defaultValue,
+    int32_t *capsFlags) {
+    @autoreleasepool {
+        return VCAVFGetControlRange(
+            VCAVFControlAPIVideoProcAmp,
+            deviceIndex,
+            property,
+            minValue,
+            maxValue,
+            step,
+            defaultValue,
+            capsFlags);
+    }
+}
+
+int32_t vcavf_get_video_proc_amp(
+    uint32_t deviceIndex,
+    int32_t property,
+    int32_t *value,
+    int32_t *flags) {
+    @autoreleasepool {
+        return VCAVFGetControl(
+            VCAVFControlAPIVideoProcAmp,
+            deviceIndex,
+            property,
+            value,
+            flags);
+    }
+}
+
+int32_t vcavf_set_video_proc_amp(
+    uint32_t deviceIndex,
+    int32_t property,
+    int32_t value,
+    int32_t flags) {
+    @autoreleasepool {
+        return VCAVFSetControl(
+            VCAVFControlAPIVideoProcAmp,
+            deviceIndex,
+            property,
+            value,
+            flags);
+    }
+}
+
+int32_t vcavf_get_camera_control_range(
+    uint32_t deviceIndex,
+    int32_t property,
+    int32_t *minValue,
+    int32_t *maxValue,
+    int32_t *step,
+    int32_t *defaultValue,
+    int32_t *capsFlags) {
+    @autoreleasepool {
+        return VCAVFGetControlRange(
+            VCAVFControlAPICameraControl,
+            deviceIndex,
+            property,
+            minValue,
+            maxValue,
+            step,
+            defaultValue,
+            capsFlags);
+    }
+}
+
+int32_t vcavf_get_camera_control(
+    uint32_t deviceIndex,
+    int32_t property,
+    int32_t *value,
+    int32_t *flags) {
+    @autoreleasepool {
+        return VCAVFGetControl(
+            VCAVFControlAPICameraControl,
+            deviceIndex,
+            property,
+            value,
+            flags);
+    }
+}
+
+int32_t vcavf_set_camera_control(
+    uint32_t deviceIndex,
+    int32_t property,
+    int32_t value,
+    int32_t flags) {
+    @autoreleasepool {
+        return VCAVFSetControl(
+            VCAVFControlAPICameraControl,
+            deviceIndex,
+            property,
+            value,
+            flags);
     }
 }

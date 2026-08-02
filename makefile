@@ -9,7 +9,7 @@ target_arm64 := arm64-apple-macosx11.0
 sources := Sources/videocapture-avfoundation/*.m
 headers := Sources/videocapture-avfoundation/include/*.h
 
-common_flags := -fobjc-arc -framework Foundation -framework AVFoundation -framework Accelerate -framework CoreGraphics -framework CoreMedia -framework CoreVideo -framework ImageIO -isysroot $(sdk_path)
+common_flags := -fobjc-arc -framework Foundation -framework AVFoundation -framework Accelerate -framework CoreAudio -framework CoreGraphics -framework CoreMedia -framework CoreMediaIO -framework CoreVideo -framework ImageIO -isysroot $(sdk_path)
 
 all: $(name_x86_64) $(if $(filter-out 10,$(sdk_version_major)),$(name_arm64),)
 
